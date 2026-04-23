@@ -1,0 +1,8 @@
+{
+  "glass": "recyclable",
+  "paper": "recyclable",
+  "plastic": "recyclable",
+  "metal": "recyclable",
+  "trash": "not_recyclable",
+  "default": "unknown"
+}

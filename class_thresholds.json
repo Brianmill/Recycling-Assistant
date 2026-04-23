@@ -1,0 +1,7 @@
+{
+  "paper": 0.55,
+  "plastic": 0.45,
+  "glass": 0.55,
+  "metal": 0.50,
+  "trash": 0.35
+}
