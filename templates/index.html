@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recycling Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+
+  <main class="app-shell">
+    <header class="hero">
+      <h1>Recycling Assistant</h1>
+      <p>Scan an item, add your location, and compare model output with local recycling guidance.</p>
+    </header>
+
+    <section class="panel controls">
+      <h2>Location + Guidance</h2>
+      <div class="row">
+        <input id="locationInput" type="text" placeholder="City, State (e.g. Austin, TX)" />
+        <button id="useLocationBtn" type="button">Use My Location</button>
+      </div>
+      <div class="row">
+        <input id="sourceUrlInput" type="url" placeholder="Optional: direct city recycling URL" />
+        <button id="loadRulesBtn" type="button">Load Local Rules</button>
+      </div>
+      <p id="locationStatus" class="status"></p>
+      <ul id="guidanceNotes" class="notes"></ul>
+    </section>
+
+    <section class="panel camera-panel">
+      <h2>Camera Scanner</h2>
+      <div class="camera-wrap">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlayCanvas" width="640" height="480"></canvas>
+        <canvas id="snapshotCanvas" width="640" height="480" hidden></canvas>
+      </div>
+      <div class="row actions">
+        <button id="startCameraBtn" type="button">Start Camera</button>
+        <button id="analyzeBtn" type="button">Start Live Tracking</button>
+      </div>
+      <p id="detectStatus" class="status"></p>
+    </section>
+
+    <section class="panel results">
+      <h2>Detection Results</h2>
+      <p id="summaryBadge" class="badge">Summary: waiting</p>
+      <div id="resultCards" class="cards"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

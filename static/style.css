@@ -1,0 +1,219 @@
+:root {
+  --bg: #f5f7f2;
+  --ink: #1f2a1f;
+  --muted: #4f5c4f;
+  --card: rgba(255, 255, 255, 0.84);
+  --line: rgba(31, 42, 31, 0.14);
+  --accent: #167c66;
+  --warn: #ad6a00;
+  --bad: #a33232;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(22, 124, 102, 0.18), transparent 38%),
+    radial-gradient(circle at 90% 80%, rgba(173, 106, 0, 0.14), transparent 40%),
+    var(--bg);
+  color: var(--ink);
+  font-family: "Space Grotesk", sans-serif;
+  overflow-x: hidden;
+}
+
+.bg-orb {
+  position: fixed;
+  width: 40vmax;
+  height: 40vmax;
+  border-radius: 50%;
+  filter: blur(80px);
+  z-index: -1;
+  opacity: 0.25;
+}
+
+.orb-a {
+  background: #36ac8f;
+  top: -18vmax;
+  right: -10vmax;
+}
+
+.orb-b {
+  background: #f0b45c;
+  bottom: -20vmax;
+  left: -8vmax;
+}
+
+.app-shell {
+  width: min(1100px, 92vw);
+  margin: 2rem auto 3rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(1.7rem, 4vw, 2.8rem);
+  letter-spacing: -0.03em;
+}
+
+.hero p {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 1rem;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(20, 20, 20, 0.08);
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 1.05rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 15px;
+}
+
+input,
+button {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  font: inherit;
+}
+
+input {
+  flex: 1;
+  min-width: 220px;
+  padding: 0.7rem 0.9rem;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+button {
+  padding: 0.7rem 0.9rem;
+  background: var(--ink);
+  color: #ffffff;
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(15, 20, 15, 0.16);
+}
+
+.status {
+  margin: 0.65rem 0 0;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.9rem;
+}
+
+.notes {
+  margin: 0.7rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.camera-wrap {
+  margin-top: 0.6rem;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #101510;
+  min-height: 520px;
+  position: relative;
+}
+
+video {
+  width: 100%;
+  height: 520px;
+  max-height: 62vh;
+  object-fit: cover;
+  display: block;
+}
+
+#overlayCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.actions {
+  margin-top: 0.8rem;
+}
+
+.badge {
+  display: inline-block;
+  margin: 0.3rem 0 0.9rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  background: rgba(31, 42, 31, 0.1);
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.cards {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.card {
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.82);
+  padding: 0.8rem;
+}
+
+.card h3 {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+}
+
+.meta {
+  margin: 0.2rem 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.ok {
+  color: var(--accent);
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.bad {
+  color: var(--bad);
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    margin-top: 1rem;
+  }
+
+  .panel {
+    padding: 0.85rem;
+  }
+
+  .camera-wrap {
+    min-height: 360px;
+  }
+
+  video {
+    height: 360px;
+    max-height: 55vh;
+  }
+}
