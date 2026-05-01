@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -9,22 +10,30 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import cv2
 import numpy as np
+import pdfplumber
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 from geopy.geocoders import Nominatim
 from ultralytics import YOLO
 
 from trash_detector import (
+    TrackState,
+    assign_tracks,
     detector_recycle_probability,
     get_recyclability,
     load_class_thresholds,
     load_recyclability_map,
+    fuse_decision,
+    verifier_recycle_probability,
 )
+import traceback
+import logging
 
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "runs/detect/runs/detect/taco_basic_fixed/weights/best.pt"
+VERIFIER_PATH = BASE_DIR / "yolov8n-cls.pt"
 MAPPING_PATH = BASE_DIR / "recyclability_map.json"
 THRESHOLD_PATH = BASE_DIR / "class_thresholds.json"
 
@@ -87,11 +96,25 @@ class GuidanceResult:
 
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 model = YOLO(str(MODEL_PATH))
+verifier_model = YOLO(str(VERIFIER_PATH)) if VERIFIER_PATH.exists() else None
 mapping = load_recyclability_map(MAPPING_PATH)
 class_thresholds = load_class_thresholds(THRESHOLD_PATH)
 geolocator = Nominatim(user_agent="recycling-assistant")
 guidance_cache: Dict[str, GuidanceResult] = {}
+tracks: Dict[int, TrackState] = {}
+frame_index = 0
+TRACKER_IOU_THRESHOLD = 0.35
+TRACKER_MAX_MISSED = 12
+RECYCLE_ACCEPT = 0.62
+TRASH_ACCEPT = 0.40
+UNKNOWN_FRAMES = 4
+
+
+@app.route("/images/<path:filename>")
+def template_image(filename: str):
+    return send_from_directory(BASE_DIR / "templates" / "images", filename)
 
 
 def _mapping_key_variants(value: str) -> Set[str]:
@@ -212,16 +235,12 @@ def _search_recycling_pages(location: str, context: Dict[str, str], limit: int =
 
     locality_hint = " ".join(part for part in [city, county, state] if part).strip() or location
     queries = [
-        f"{locality_hint} recycling accepted items",
-        f"{locality_hint} what goes in recycling bin",
-        f"{locality_hint} county recycling rules",
-        f"site:.gov {locality_hint} recycling",
+        f"{locality_hint} recycling regulations",
+        f"{locality_hint} recycling rules",
+        f"{locality_hint} recycling ordinance",
+        f"{locality_hint} what can be recycled",
     ]
     collected: List[str] = []
-    relevance_pattern = re.compile(
-        r"recycl|solid\s+waste|public\s+works|sanitation|trash|landfill",
-        re.IGNORECASE,
-    )
 
     def _normalize_search_href(href: str) -> Optional[str]:
         if "bing.com/ck/a" in href:
@@ -250,6 +269,7 @@ def _search_recycling_pages(location: str, context: Dict[str, str], limit: int =
         return None
 
     for query in queries:
+        logging.info("Search query: %s", query)
         # Prefer RSS results because they are stable and easier to parse than dynamic HTML.
         rss_response = requests.get(
             "https://www.bing.com/search",
@@ -257,6 +277,7 @@ def _search_recycling_pages(location: str, context: Dict[str, str], limit: int =
             timeout=12,
             headers=headers,
         )
+        logging.info("Bing RSS request: %s", rss_response.url)
         rss_response.raise_for_status()
         try:
             root = ET.fromstring(rss_response.text)
@@ -275,23 +296,20 @@ def _search_recycling_pages(location: str, context: Dict[str, str], limit: int =
 
             if not href or not href.startswith("http"):
                 continue
-            if not relevance_pattern.search(signal_text):
-                continue
 
             if href not in collected:
                 collected.append(href)
-            if len(collected) >= limit:
-                return collected[:limit]
-
     # Fallback: Bing HTML search when RSS yields insufficient results.
     if len(collected) < limit:
         for query in queries:
+            logging.info("Bing HTML fallback query: %s", query)
             response = requests.get(
                 "https://www.bing.com/search",
                 params={"q": query},
                 timeout=12,
                 headers=headers,
             )
+            logging.info("Bing HTML request: %s", response.url)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, "html.parser")
@@ -300,25 +318,12 @@ def _search_recycling_pages(location: str, context: Dict[str, str], limit: int =
                 if not href:
                     continue
 
-                snippet_container = anchor.find_parent("li", class_="b_algo")
-                snippet_text = snippet_container.get_text(" ", strip=True) if snippet_container else ""
-                if not relevance_pattern.search(snippet_text):
-                    continue
-
                 normalized = _normalize_search_href(href)
                 if not normalized:
                     continue
 
                 if normalized not in collected:
                     collected.append(normalized)
-                if len(collected) >= limit:
-                    return collected[:limit]
-
-    preferred_tokens = {
-        token.lower()
-        for token in [city, county, state]
-        if token and len(token.strip()) > 2
-    }
 
     blocked_fragments = [
         "facebook.com",
@@ -327,6 +332,31 @@ def _search_recycling_pages(location: str, context: Dict[str, str], limit: int =
         "linkedin.com",
         "pinterest.com",
         "wikipedia.org",
+        "amazon.com",
+        "etsy.com",
+        "ebay.com",
+        "store",
+        "shop",
+        "shopping",
+        "supply",
+        "outdoor",
+        "equipment",
+        "gear",
+    ]
+
+    preferred_fragments = [
+        ".gov",
+        ".us",
+        "township",
+        "town",
+        "borough",
+        "city",
+        "municipal",
+        "county",
+        "publicworks",
+        "recycl",
+        "solidwaste",
+        "waste",
     ]
 
     scored: List[Tuple[int, str]] = []
@@ -336,19 +366,25 @@ def _search_recycling_pages(location: str, context: Dict[str, str], limit: int =
             continue
 
         score = 0
-        if ".gov" in lowered or ".us/" in lowered:
-            score += 4
-        if "recycl" in lowered:
+        if "recycl" in lowered or "waste" in lowered or "trash" in lowered or "garbage" in lowered:
             score += 2
-        if "county" in lowered or "municipal" in lowered or "publicworks" in lowered:
+        if any(fragment in lowered for fragment in preferred_fragments):
             score += 2
-        if any(token in lowered for token in preferred_tokens):
+        if urlparse(url).netloc.endswith(".gov") or urlparse(url).netloc.endswith(".us"):
             score += 3
+        if any(term in lowered for term in ["collection", "guideline", "ordinance", "rules", "accepted", "program"]):
+            score += 1
+
+        if score <= 0:
+            logging.info("Search result dropped as low relevance: %s", url)
+            continue
 
         scored.append((score, url))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     ranked = [url for _, url in scored][:limit]
+    for url in ranked:
+        logging.info("Search result selected for crawl: %s", url)
     return ranked
 
 
@@ -374,10 +410,8 @@ def _extract_recycling_signals(text: str) -> Tuple[Set[str], Set[str], List[str]
 
         if matched_negative:
             disallowed.add(material)
-            notes.append(f"Local rule indicates {material} may not be accepted.")
         elif matched_positive:
             allowed.add(material)
-            notes.append(f"Local rule indicates {material} is accepted.")
 
     return allowed, disallowed, notes
 
@@ -395,7 +429,6 @@ def _extract_item_signals(text: str) -> Tuple[Set[str], Set[str], Set[str], Set[
     if plastic_number_positive:
         allowed_materials.add("plastic")
         allowed_items.add("plastic #1/#2/#5")
-        notes.append("Local rule indicates plastics #1/#2/#5 are accepted.")
 
     for item, material in ITEM_TO_MATERIAL.items():
         pos_patterns = [
@@ -449,9 +482,10 @@ def _extract_item_signals(text: str) -> Tuple[Set[str], Set[str], Set[str], Set[
                 allowed_materials.add("plastic")
 
     if allowed_items:
-        notes.append("Accepted items detected: " + ", ".join(sorted(allowed_items)[:10]))
+        # only keep the longest item listed to avoid overlaps (e.g., "plastic bottles" vs "plastic")
+        notes.append("Accepted items: " + ", ".join(sorted(allowed_items)[:10]))
     if disallowed_items:
-        notes.append("Restricted items detected: " + ", ".join(sorted(disallowed_items)[:10]))
+        notes.append("Restricted items: " + ", ".join(sorted(disallowed_items)[:10]))
 
     # Resolve conflicts in favor of accepted signals when both appear.
     disallowed_items -= allowed_items
@@ -460,156 +494,200 @@ def _extract_item_signals(text: str) -> Tuple[Set[str], Set[str], Set[str], Set[
     return allowed_materials, disallowed_materials, allowed_items, disallowed_items, notes
 
 
+def _split_sentences(text: str) -> List[str]:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return []
+
+    raw_sentences = re.split(r"(?<=[.!?])\s+|\s*[\r\n]+\s*", cleaned)
+    sentences = [sentence.strip(" \t-•;:") for sentence in raw_sentences]
+    return [sentence for sentence in sentences if len(sentence) > 20]
+
+
+def _score_regulation_sentence(sentence: str, location_tokens: Set[str]) -> Tuple[int, Set[str], Set[str]]:
+    lowered = sentence.lower()
+    score = 0
+    allowed_hits: Set[str] = set()
+    disallowed_hits: Set[str] = set()
+
+    regulatory_terms = [
+        "recycle",
+        "recycling",
+        "accepted",
+        "accepts",
+        "allowed",
+        "prohibited",
+        "prohibit",
+        "not accepted",
+        "do not recycle",
+        "not recyclable",
+        "ordinance",
+        "guideline",
+        "regulation",
+        "policy",
+        "rule",
+        "ban",
+        "curbside",
+        "municipal",
+        "county",
+    ]
+    if any(term in lowered for term in regulatory_terms):
+        score += 3
+
+    for token in location_tokens:
+        if token and token in lowered:
+            score += 1
+
+    for material in MATERIALS:
+        if material in lowered:
+            score += 2
+            if re.search(rf"{material}[^\n]{{0,80}}(accepted|allowed|recyclable|can be recycled)", lowered):
+                allowed_hits.add(material)
+                score += 2
+            if re.search(rf"{material}[^\n]{{0,80}}(not accepted|do not recycle|not recyclable|prohibited)", lowered):
+                disallowed_hits.add(material)
+                score += 2
+
+    for item, material in ITEM_TO_MATERIAL.items():
+        if item in lowered:
+            score += 2
+            if re.search(rf"{re.escape(item)}[^\n]{{0,110}}(accepted|allowed|recyclable|can be recycled|yes)", lowered):
+                allowed_hits.add(material)
+                score += 2
+            if re.search(rf"{re.escape(item)}[^\n]{{0,110}}(not accepted|do not recycle|not recyclable|prohibited)", lowered):
+                disallowed_hits.add(material)
+                score += 2
+
+    if re.search(r"\b(must|shall|should|may not|must not|do not|not)\b", lowered):
+        score += 1
+
+    return score, allowed_hits, disallowed_hits
+
+
+def _extract_regulations_with_nlp(text: str, context: Dict[str, str], max_sentences: int = 10) -> Tuple[Set[str], Set[str], Set[str], Set[str], List[str]]:
+    sentences = _split_sentences(text)
+    if not sentences:
+        return set(), set(), set(), set(), []
+
+    location_tokens = {
+        token.strip().lower()
+        for token in [context.get("city", ""), context.get("county", ""), context.get("state", ""), context.get("country", "")]
+        if token and len(token.strip()) > 2
+    }
+
+    scored: List[Tuple[int, str, Set[str], Set[str]]] = []
+    for sentence in sentences:
+        score, allowed_hits, disallowed_hits = _score_regulation_sentence(sentence, location_tokens)
+        if score >= 4:
+            scored.append((score, sentence, allowed_hits, disallowed_hits))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    allowed_materials: Set[str] = set()
+    disallowed_materials: Set[str] = set()
+    allowed_items: Set[str] = set()
+    disallowed_items: Set[str] = set()
+    notes: List[str] = []
+
+    for _, sentence, allowed_hits, disallowed_hits in scored[:max_sentences]:
+        allowed_materials.update(allowed_hits)
+        disallowed_materials.update(disallowed_hits)
+
+        lowered = sentence.lower()
+        for item, material in ITEM_TO_MATERIAL.items():
+            if item in lowered:
+                if material in allowed_hits or re.search(rf"{re.escape(item)}[^\n]{{0,110}}(accepted|allowed|recyclable|can be recycled|yes)", lowered):
+                    allowed_items.add(item)
+                    allowed_materials.add(material)
+                if material in disallowed_hits or re.search(rf"{re.escape(item)}[^\n]{{0,110}}(not accepted|do not recycle|not recyclable|prohibited)", lowered):
+                    disallowed_items.add(item)
+                    disallowed_materials.add(material)
+
+        for material in MATERIALS:
+            if material in lowered:
+                if re.search(rf"{material}[^\n]{{0,100}}(accepted|allowed|recyclable|can be recycled)", lowered):
+                    allowed_materials.add(material)
+                if re.search(rf"{material}[^\n]{{0,100}}(not accepted|do not recycle|not recyclable|prohibited)", lowered):
+                    disallowed_materials.add(material)
+
+    disallowed_items -= allowed_items
+    disallowed_materials -= allowed_materials
+
+    return allowed_materials, disallowed_materials, allowed_items, disallowed_items, notes
+
+
 def _fetch_page_text(url: str) -> Tuple[str, List[str]]:
     """Returns (page_text, list_of_absolute_anchor_hrefs)."""
+    # If the caller passed something that isn't a URL, skip fetching.
+    if not isinstance(url, str) or not url.lower().startswith("http"):
+        logging.info("_fetch_page_text: non-URL input received, skipping: %s", repr(url))
+        return "", []
+    logging.info("Fetching page: %s", url)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+    # Check if URL points to a PDF
+    is_pdf = url.lower().endswith(".pdf")
+
     try:
         response = requests.get(url, timeout=12, headers=headers)
+        logging.info("Fetched %s with status %s", response.url, response.status_code)
         if response.status_code < 400:
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            # Extract anchor hrefs before stripping tags
-            links: List[str] = []
-            for a in soup.select("a[href]"):
-                href = a.get("href", "")
-                if href and not href.startswith(("#", "mailto:", "javascript:")):
-                    links.append(urljoin(url, href))
-
-            for tag in soup(["script", "style", "noscript"]):
-                tag.decompose()
-
-            return " ".join(soup.stripped_strings), links
-    except Exception:
-        pass
-
-    parsed = urlparse(url)
-    mirror_url = f"https://r.jina.ai/http://{parsed.netloc}{parsed.path}"
-    if parsed.query:
-        mirror_url = f"{mirror_url}?{parsed.query}"
-
-    mirror_response = requests.get(mirror_url, timeout=15, headers=headers)
-    mirror_response.raise_for_status()
-    return mirror_response.text, []
-
-
-def _discover_local_government_pages(context: Dict[str, str], limit: int = 6) -> List[str]:
-    county = context.get("county", "")
-    city = context.get("city", "")
-    state = context.get("state", "")
-    state_compact = re.sub(r"[^a-z]", "", state.lower())
-    state_abbr = STATE_ABBREVIATIONS.get(state.lower().strip(), "")
-    county_base = re.sub(r"\bcounty\b", "", county, flags=re.IGNORECASE).strip().lower()
-    county_slug = re.sub(r"[^a-z0-9]+", "", county_base)
-    city_base = re.sub(r"\b(township|town|city|borough|village|municipality)\b", "", city, flags=re.IGNORECASE).strip().lower()
-    city_slug = re.sub(r"[^a-z0-9]+", "", city.lower())
-    city_base_slug = re.sub(r"[^a-z0-9]+", "", city_base)
-
-    if not county_slug and not city_slug:
-        return []
-
-    candidate_roots: List[str] = []
-    if county_slug:
-        candidate_roots.extend(
-            [
-                f"https://www.{county_slug}county.org",
-                f"https://{county_slug}county.org",
-                f"https://www.{county_slug}county.gov",
-                f"https://{county_slug}county.gov",
-            ]
-        )
-
-        if state_compact:
-            candidate_roots.extend(
-                [
-                    f"https://www.{county_slug}county{state_compact}.gov",
-                    f"https://{county_slug}county{state_compact}.gov",
-                ]
-            )
-
-    city_slug_variants = [slug for slug in [city_slug, city_base_slug] if slug]
-
-    if city_slug_variants:
-        city_candidates: List[str] = []
-        for slug in city_slug_variants:
-            city_candidates.extend(
-                [
-                    f"https://www.{slug}.org",
-                    f"https://{slug}.org",
-                ]
-            )
-        if state_abbr:
-            for slug in city_slug_variants:
-                city_candidates.extend(
-                    [
-                        f"https://www.{slug}{state_abbr}.org",
-                        f"https://{slug}{state_abbr}.org",
-                    ]
-                )
-        candidate_roots.extend(city_candidates)
-
-    harvested: List[str] = []
-    keyword_pattern = re.compile(r"recycl|solid\s+waste|public\s+works|sanitation|trash", re.IGNORECASE)
-
-    for root in candidate_roots:
-        matched_this_root = False
-
-        # Pages to probe: home page first, then the sitemap (rich source for CivicPlus sites).
-        probe_urls = [root, f"{root.rstrip('/')}/sitemap"]
-
-        for probe_url in probe_urls:
-            try:
-                response = requests.get(probe_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
-                if response.status_code >= 400:
-                    continue
-
+            # Handle PDF extraction
+            if is_pdf:
+                try:
+                    pdf_file = io.BytesIO(response.content)
+                    pdf_text_parts: List[str] = []
+                    with pdfplumber.open(pdf_file) as pdf:
+                        for page in pdf.pages:
+                            page_text = page.extract_text()
+                            if page_text:
+                                pdf_text_parts.append(page_text)
+                    pdf_text = " ".join(pdf_text_parts)
+                    logging.info("Successfully extracted text from PDF: %s (length: %d)", url, len(pdf_text))
+                    return pdf_text, []
+                except Exception as pdf_err:
+                    logging.warning("Failed to extract PDF text from %s: %s", url, pdf_err)
+                    return "", []
+            else:
+                # Handle HTML extraction
                 soup = BeautifulSoup(response.text, "html.parser")
 
-                for anchor in soup.select("a[href]"):
-                    href = anchor.get("href") or ""
-                    text = anchor.get_text(" ", strip=True)
-                    composite = f"{href} {text}"
-                    if not keyword_pattern.search(composite):
-                        continue
+                # Extract anchor hrefs before stripping tags
+                links: List[str] = []
+                for a in soup.select("a[href]"):
+                    href = a.get("href", "")
+                    if href and not href.startswith(("#", "mailto:", "javascript:")):
+                        links.append(urljoin(url, href))
 
-                    absolute = urljoin(root, href)
-                    if absolute.startswith("http") and absolute not in harvested:
-                        harvested.append(absolute)
-                        matched_this_root = True
-                    if len(harvested) >= limit:
-                        return harvested[:limit]
-            except Exception:
-                pass
+                for tag in soup(["script", "style", "noscript"]):
+                    tag.decompose()
 
-        if matched_this_root:
-            continue
+                return " ".join(soup.stripped_strings), links
+    except Exception as exc:
+        logging.warning("Failed to fetch %s: %s", url, exc)
 
-        # Anti-bot friendly fallback: extract absolute URLs from the mirrored page text.
+    parsed = urlparse(url)
+    # Only attempt the jina.ai mirror when the parsed netloc looks valid (contains a dot)
+    # and it's not a PDF (PDFs should not be mirrored)
+    if not is_pdf and parsed.netloc and "." in parsed.netloc:
+        mirror_url = f"https://r.jina.ai/http://{parsed.netloc}{parsed.path}"
+        if parsed.query:
+            mirror_url = f"{mirror_url}?{parsed.query}"
+
         try:
-            parsed = urlparse(root)
-            mirror_url = f"https://r.jina.ai/http://{parsed.netloc}{parsed.path}"
-            mirror_text = requests.get(
-                mirror_url,
-                timeout=15,
-                headers={"User-Agent": "Mozilla/5.0"},
-            ).text
+            logging.info("Trying jina mirror: %s", mirror_url)
+            mirror_response = requests.get(mirror_url, timeout=15, headers=headers)
+            logging.info("Mirror response: %s %s", mirror_response.url, mirror_response.status_code)
+            mirror_response.raise_for_status()
+            return mirror_response.text, []
+        except Exception as mirror_err:
+            logging.warning("Jina mirror fallback failed for %s: %s", url, mirror_err)
 
-            for link in re.findall(r"https?://[^\s\)\]]+", mirror_text):
-                if not keyword_pattern.search(link):
-                    continue
-                cleaned = link.strip().rstrip(".,")
-                if cleaned not in harvested:
-                    harvested.append(cleaned)
-                if len(harvested) >= limit:
-                    return harvested[:limit]
-        except Exception:
-            continue
-
-    return harvested[:limit]
-
+    logging.info("_fetch_page_text: could not fetch or parse content from: %s", url)
+    return "", []
 
 def get_location_guidance(location: str, source_url: Optional[str] = None) -> GuidanceResult:
     cache_key = f"{location.strip().lower()}::{(source_url or '').strip().lower()}"
@@ -634,25 +712,24 @@ def get_location_guidance(location: str, source_url: Optional[str] = None) -> Gu
             notes.append(f"Search step failed: {exc}")
 
     if not source_url:
-        discovered_pages = _discover_local_government_pages(context=context)
-        if discovered_pages:
-            notes.append("Used local government discovery to find recycling pages.")
         merged: List[str] = []
-        for candidate in urls_to_scan + discovered_pages:
+        for candidate in urls_to_scan:
             if candidate not in merged:
                 merged.append(candidate)
         urls_to_scan = merged
+    logging.info("Crawl seed URLs for %s: %s", location, urls_to_scan)
 
     queue: List[str] = urls_to_scan[:20]
     seen: Set[str] = set()
     processed_count = 0
     follow_pattern = re.compile(r"recycl|solid\s*waste|hazardous|mcia|public\s*works", re.IGNORECASE)
 
-    while queue and processed_count < 20:
+    while queue and processed_count < 10:
         url = queue.pop(0)
         if url in seen:
             continue
         seen.add(url)
+        logging.info("Crawl visit #%d: %s", processed_count + 1, url)
 
         # Decode Granicus/CivicPlus external splash redirects (e.g. mercercounty.org)
         # instead of wasting a processing slot on a "you are leaving" interstitial page.
@@ -685,15 +762,27 @@ def get_location_guidance(location: str, source_url: Optional[str] = None) -> Gu
                 page_disallowed_items,
                 item_notes,
             ) = _extract_item_signals(text)
+            (
+                nlp_allowed_materials,
+                nlp_disallowed_materials,
+                nlp_allowed_items,
+                nlp_disallowed_items,
+                nlp_notes,
+            ) = _extract_regulations_with_nlp(text, context=context)
 
             allowed.update(page_allowed)
             allowed.update(item_allowed_materials)
+            allowed.update(nlp_allowed_materials)
             disallowed.update(page_disallowed)
             disallowed.update(item_disallowed_materials)
+            disallowed.update(nlp_disallowed_materials)
             allowed_items.update(page_allowed_items)
+            allowed_items.update(nlp_allowed_items)
             disallowed_items.update(page_disallowed_items)
+            disallowed_items.update(nlp_disallowed_items)
             notes.extend(page_notes)
             notes.extend(item_notes)
+            notes.extend(nlp_notes)
             sources.append(url)
 
             # Follow recycling-relevant anchor links found in the page HTML.
@@ -702,6 +791,7 @@ def get_location_guidance(location: str, source_url: Optional[str] = None) -> Gu
                     continue
                 is_mcia_sec_link = "mcianj.org/index.asp?SEC=" in link_url
                 if follow_pattern.search(link_url) or is_mcia_sec_link:
+                    logging.info("Queueing discovered link: %s", link_url)
                     queue.append(link_url)
 
             # Also follow absolute URLs embedded in page text (e.g., jina-mirrored pages).
@@ -710,6 +800,7 @@ def get_location_guidance(location: str, source_url: Optional[str] = None) -> Gu
                 if candidate in seen or candidate in queue:
                     continue
                 if follow_pattern.search(candidate):
+                    logging.info("Queueing text-discovered link: %s", candidate)
                     queue.append(candidate)
         except Exception as exc:
             notes.append(f"Could not process {url}: {exc}")
@@ -718,6 +809,54 @@ def get_location_guidance(location: str, source_url: Optional[str] = None) -> Gu
         notes.append("Could not read the provided guidance URL.")
     if not sources and not source_url:
         notes.append("No guidance pages were fully readable from automatic search; try adding an official city or county recycling URL in the optional field.")
+        try:
+            fallback_url = "https://www.epa.gov/recycle"
+            text, page_links = _fetch_page_text(fallback_url)
+            if text:
+                page_allowed, page_disallowed, page_notes = _extract_recycling_signals(text)
+                (
+                    item_allowed_materials,
+                    item_disallowed_materials,
+                    page_allowed_items,
+                    page_disallowed_items,
+                    item_notes,
+                ) = _extract_item_signals(text)
+                (
+                    nlp_allowed_materials,
+                    nlp_disallowed_materials,
+                    nlp_allowed_items,
+                    nlp_disallowed_items,
+                    nlp_notes,
+                ) = _extract_regulations_with_nlp(text, context=context)
+
+                allowed.update(page_allowed)
+                allowed.update(item_allowed_materials)
+                allowed.update(nlp_allowed_materials)
+                disallowed.update(page_disallowed)
+                disallowed.update(item_disallowed_materials)
+                disallowed.update(nlp_disallowed_materials)
+                allowed_items.update(page_allowed_items)
+                allowed_items.update(nlp_allowed_items)
+                disallowed_items.update(page_disallowed_items)
+                disallowed_items.update(nlp_disallowed_items)
+                notes.extend(page_notes)
+                notes.extend(item_notes)
+                notes.extend(nlp_notes)
+                sources.append(fallback_url)
+                for link_url in page_links:
+                    if link_url not in sources and link_url not in queue:
+                        queue.append(link_url)
+        except Exception as exc:
+            notes.append(f"General recycling guidance fallback failed: {exc}")
+
+    # Resolve cross-page conflicts in favor of accepted signals.
+    disallowed_items -= allowed_items
+    disallowed -= allowed
+
+    # Keep exactly one consolidated accepted-items note.
+    notes = [note for note in notes if not note.startswith("Accepted items:")]
+    if allowed_items:
+        notes.append("Accepted items: " + ", ".join(sorted(allowed_items)))
 
     # Add a single summary note if nothing could be extracted
     if not allowed and not allowed_items and not disallowed and not disallowed_items:
@@ -829,7 +968,10 @@ def guidelines():
 
 @app.post("/api/detect-frame")
 def detect_frame():
+    global frame_index
+    frame_index += 1
     payload = request.get_json(force=True)
+    logging.info("/api/detect-frame called, payload keys: %s", list(payload.keys()) if isinstance(payload, dict) else str(type(payload)))
     image_data_url = payload.get("image")
     location = (payload.get("location") or "").strip()
     source_url = (payload.get("source_url") or "").strip() or None
@@ -842,12 +984,56 @@ def detect_frame():
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
+    # Debug logging to help diagnose client/server issues
+    try:
+        logging.info(f"/api/detect-frame called, frame shape: {frame.shape}")
+    except Exception:
+        logging.info("/api/detect-frame called, could not read frame shape")
+
     guidance: Optional[GuidanceResult] = None
     if location:
         guidance = get_location_guidance(location=location, source_url=source_url)
 
-    results = model.predict(source=frame, conf=0.3, verbose=False)
+    try:
+        results = model.predict(source=frame, conf=0.3, verbose=False)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        logging.error("Model predict failed: %s", tb)
+        return jsonify({"ok": False, "error": "Model prediction failed", "detail": str(exc)}), 500
+
+    # Detailed detection logging for debugging
+    try:
+        if not results:
+            logging.info("Model.predict returned no results")
+        else:
+            logging.info("Model.predict returned %d result(s)", len(results))
+            result = results[0]
+            boxes_count = len(result.boxes) if hasattr(result, 'boxes') else 0
+            logging.info("Result[0] contains %d boxes", boxes_count)
+            for i, box in enumerate(getattr(result, 'boxes', [])):
+                try:
+                    cls_id = int(box.cls.item())
+                    det_conf = float(box.conf.item())
+                    coords = [float(v) for v in box.xyxy[0].tolist()]
+                    label = str(result.names.get(cls_id, str(cls_id)))
+                    threshold = class_thresholds.get(label.strip().lower(), 0.35)
+                    logging.info(
+                        "Box %d: cls=%s id=%d conf=%.3f coords=%s threshold=%.3f",
+                        i,
+                        label,
+                        cls_id,
+                        det_conf,
+                        coords,
+                        threshold,
+                    )
+                    if det_conf < threshold:
+                        logging.info("Box %d filtered out by threshold (%.3f < %.3f)", i, det_conf, threshold)
+                except Exception:
+                    logging.exception("Error logging box %d details", i)
+    except Exception:
+        logging.exception("Error while logging detection results")
     detections: List[Dict[str, object]] = []
+    detection_rows: List[Dict[str, object]] = []
 
     if results:
         result = results[0]
@@ -860,21 +1046,57 @@ def detect_frame():
             if det_conf < threshold:
                 continue
 
-            base_status = get_recyclability(label, mapping)
-            detector_prob = detector_recycle_probability(base_status, det_conf)
-            final_status, reason = _apply_local_override(label, base_status, guidance)
-
-            detections.append(
+            detection_rows.append(
                 {
                     "label": label,
-                    "confidence": round(det_conf, 3),
-                    "box": [round(float(v), 1) for v in box.xyxy[0].tolist()],
-                    "detector_recycle_score": round(detector_prob, 3),
-                    "base_status": base_status,
-                    "final_status": final_status,
-                    "local_reason": reason,
+                    "conf": det_conf,
+                    "box": [float(v) for v in box.xyxy[0].tolist()],
                 }
             )
+
+    assign_tracks(
+        tracks=tracks,
+        detections=detection_rows,
+        frame_index=frame_index,
+        iou_threshold=TRACKER_IOU_THRESHOLD,
+        max_missed_frames=TRACKER_MAX_MISSED,
+    )
+
+    for det in detection_rows:
+        label = str(det["label"])
+        det_conf = float(det["conf"])
+        xyxy = det["box"]
+        track_id = int(det["track_id"])
+        track = tracks[track_id]
+
+        base_status = get_recyclability(label, mapping)
+        detector_prob = detector_recycle_probability(base_status, det_conf)
+        verifier_prob = verifier_recycle_probability(verifier_model, frame, xyxy)
+        track_status, track_prob = fuse_decision(
+            track=track,
+            detector_prob=detector_prob,
+            verifier_prob=verifier_prob,
+            recyclable_accept=RECYCLE_ACCEPT,
+            trash_accept=TRASH_ACCEPT,
+            unknown_frames=UNKNOWN_FRAMES,
+        )
+        final_status, reason = _apply_local_override(label, track_status, guidance)
+
+        detections.append(
+            {
+                "label": label,
+                "confidence": round(det_conf, 3),
+                "box": [round(float(v), 1) for v in xyxy],
+                "track_id": track_id,
+                "detector_recycle_score": round(detector_prob, 3),
+                "verifier_recycle_score": round(verifier_prob, 3),
+                "track_status": track_status,
+                "track_recycle_score": round(track_prob, 3),
+                "base_status": base_status,
+                "final_status": final_status,
+                "local_reason": reason,
+            }
+        )
 
     summary = "unknown"
     if any(d["final_status"] == "not_recyclable" for d in detections):
