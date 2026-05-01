@@ -31,6 +31,7 @@ class TrackState:
     box: List[float]
     last_seen: int
     label: str
+    display_box: Optional[List[float]] = None
     history: Deque[str] = field(default_factory=lambda: deque(maxlen=8))
     recycle_scores: Deque[float] = field(default_factory=lambda: deque(maxlen=8))
     unknown_streak: int = 0
@@ -86,6 +87,13 @@ def iou_xyxy(a: List[float], b: List[float]) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def smooth_box(previous: Optional[List[float]], current: List[float], alpha: float = 0.65) -> List[float]:
+    if previous is None:
+        return list(current)
+
+    return [alpha * prev + (1.0 - alpha) * curr for prev, curr in zip(previous, current)]
+
+
 def assign_tracks(tracks: Dict[int, TrackState], detections: List[Dict[str, object]], frame_index: int, iou_threshold: float, max_missed_frames: int) -> None:
     unmatched_tracks = set(tracks.keys())
 
@@ -103,6 +111,7 @@ def assign_tracks(tracks: Dict[int, TrackState], detections: List[Dict[str, obje
         if best_id is not None and best_iou >= iou_threshold:
             track = tracks[best_id]
             track.box = det_box
+            track.display_box = smooth_box(track.display_box, det_box)
             track.last_seen = frame_index
             track.label = str(det["label"])
             det["track_id"] = best_id
@@ -114,6 +123,7 @@ def assign_tracks(tracks: Dict[int, TrackState], detections: List[Dict[str, obje
                 box=det_box,
                 last_seen=frame_index,
                 label=str(det["label"]),
+                display_box=list(det_box),
             )
             det["track_id"] = new_id
 
@@ -179,7 +189,7 @@ def verifier_recycle_probability(verifier: Optional[YOLO], frame, box: List[floa
 
 def fuse_decision(track: TrackState, detector_prob: float, verifier_prob: float, recyclable_accept: float, trash_accept: float, unknown_frames: int) -> Tuple[str, float]:
     temporal_prob = sum(track.recycle_scores) / len(track.recycle_scores) if track.recycle_scores else 0.5
-    final_prob = 0.6 * detector_prob + 0.25 * verifier_prob + 0.15 * temporal_prob
+    final_prob = 0.5 * detector_prob + 0.25 * verifier_prob + 0.25 * temporal_prob
 
     if final_prob >= recyclable_accept:
         status = "recyclable"
@@ -297,7 +307,7 @@ def run_webcam_detector(
                 status, final_prob = fuse_decision(track=track, detector_prob=detector_prob, verifier_prob=verifier_prob, recyclable_accept=recyclable_accept, trash_accept=trash_accept, unknown_frames=unknown_frames,)
 
                 show_label = f"{label}#{track_id}" if status == "recyclable" else f"trash#{track_id}"
-                draw_detection(frame, xyxy, show_label, final_prob, status)
+                draw_detection(frame, track.display_box or xyxy, show_label, final_prob, status)
 
             dt = time.time() - t0
             if dt > 0:
@@ -330,7 +340,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="runs/detect/runs/detect/taco_basic_fixed/weights/best.pt",
+        default="taco_best.pt",
         help=(
             "Path to your YOLOv8 weights (.pt). "
             "Defaults to the retrained TACO model in runs/detect/.../best.pt."
@@ -339,7 +349,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--verifier",
         type=str,
-        default=None,
+        default="kaggle_best.pt",
         help=(
             "Optional secondary classifier model path (.pt) trained on "
             "recyclable vs not_recyclable for crop verification."
