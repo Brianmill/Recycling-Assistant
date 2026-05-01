@@ -31,10 +31,14 @@
       </div>
       <p id="locationStatus" class="status"></p>
       <ul id="guidanceNotes" class="notes"></ul>
+      <details id="sourceDropdown" class="sources-dropdown hidden">
+        <summary>View Sources (click to expand)</summary>
+        <ul id="sourcesList" class="sources-list"></ul>
+      </details>
     </section>
 
     <section class="panel camera-panel">
-      <h2>Camera Scanner</h2>
+      <h2>Object Classifier</h2>
       <div class="camera-wrap">
         <video id="video" autoplay playsinline muted></video>
         <canvas id="overlayCanvas" width="640" height="480"></canvas>
@@ -52,6 +56,47 @@
       <p id="summaryBadge" class="badge">Summary: waiting</p>
       <div id="resultCards" class="cards"></div>
     </section>
+
+    <section class="panel">
+      <details class="plastic-dropdown">
+        <summary>Plastic type guide: where to find the code and what each code means</summary>
+        <div class="dropdown-body">
+          <p>
+            The recycling number is usually molded or printed inside the chasing-arrows triangle on the bottom,
+            side, or back of a plastic item. On bottles, tubs, clamshells, and food containers, check the underside
+            first, then the rim, neck, or label area if you do not see it right away.
+          </p>
+          <p>
+            The number identifies the resin type, not a universal recycling decision. Local programs may accept some
+            numbered plastics and reject others. The types of plastic accepted in your area can be found by either
+            entering your location, using your current location, or providing a direct URL to your local recycling guidelines at
+            the top of this page. After a moment your local recycling regulations can be viewed.
+          </p>
+          <div class="example-image-wrap">
+            <img src="/images/water-bottle-recycling-number.jpg" alt="Plastic number location example" class="example-image" />
+          </div>
+          <ul class="notes">
+            <li><strong>1 - PET or PETE:</strong> water and soda bottles, some salad dressing bottles, peanut butter jars.</li>
+            <li><strong>2 - HDPE:</strong> milk jugs, detergent bottles, shampoo bottles, household cleaner bottles.</li>
+            <li><strong>3 - PVC:</strong> clear food packaging, some pipes, vinyl items, some cling wrap. Often not accepted curbside.</li>
+            <li><strong>4 - LDPE:</strong> squeezable bottles, bread bags, frozen food bags, some shopping bags. Acceptance varies.</li>
+            <li><strong>5 - PP:</strong> yogurt tubs, prescription bottles, takeout containers, bottle caps, straws. Acceptance varies.</li>
+            <li><strong>6 - PS:</strong> foam cups, foam trays, disposable cutlery, egg cartons, some clamshells. Often not accepted curbside.</li>
+            <li><strong>7 - Other:</strong> mixed plastics, bioplastics, polycarbonate, and specialty containers. Usually needs extra checking.</li>
+          </ul>
+          <p>
+            If a container has no number, it may still be recyclable locally, but you should check the material shape,
+            label, and your town rules before placing it in the bin.
+          </p>
+        </div>
+      </details>
+    </section>
+
+    <!-- Loading Indicator -->
+    <div id="loadingSpinner" class="loading-spinner hidden">
+      <div class="spinner"></div>
+      <p>Processing...</p>
+    </div>
   </main>
 
   <script src="/static/app.js"></script>

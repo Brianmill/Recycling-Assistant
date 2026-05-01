@@ -18,11 +18,60 @@ const guidanceNotes = document.getElementById("guidanceNotes");
 let stream;
 let trackingTimer = null;
 let trackingBusy = false;
+const loadingSpinner = document.getElementById("loadingSpinner");
+const sourceDropdown = document.getElementById("sourceDropdown");
+const sourcesList = document.getElementById("sourcesList");
+let loadingCount = 0;
+let loadingTimer = null;
+let loadingShownAt = 0;
+const LOADING_DELAY_MS = 180;
+const LOADING_MIN_VISIBLE_MS = 350;
+
+function showLoading() {
+  loadingCount += 1;
+  if (loadingCount > 1) {
+    return;
+  }
+
+  if (loadingTimer) {
+    window.clearTimeout(loadingTimer);
+  }
+
+  loadingTimer = window.setTimeout(() => {
+    loadingShownAt = Date.now();
+    loadingSpinner.classList.remove("hidden");
+    loadingTimer = null;
+  }, LOADING_DELAY_MS);
+}
+
+function hideLoading() {
+  loadingCount = Math.max(0, loadingCount - 1);
+  if (loadingCount > 0) {
+    return;
+  }
+
+  if (loadingTimer) {
+    window.clearTimeout(loadingTimer);
+    loadingTimer = null;
+  }
+
+  const elapsed = Date.now() - loadingShownAt;
+  const hideNow = () => {
+    loadingSpinner.classList.add("hidden");
+    loadingShownAt = 0;
+  };
+
+  if (loadingShownAt && elapsed < LOADING_MIN_VISIBLE_MS) {
+    window.setTimeout(hideNow, LOADING_MIN_VISIBLE_MS - elapsed);
+  } else {
+    hideNow();
+  }
+}
 
 const STATUS_COLORS = {
-  recyclable: "#1aa36a",
-  not_recyclable: "#d23b3b",
-  unknown: "#f29d2a",
+  recyclable: "rgb(0, 180, 0)",
+  not_recyclable: "rgb(220, 0, 0)",
+  unknown: "rgb(255, 180, 0)",
 };
 
 function setStatus(el, text, cls = "") {
@@ -58,14 +107,8 @@ function renderGuidance(guidance) {
   if (guidance.disallowed.length) {
     items.push(`Disallowed: ${guidance.disallowed.join(", ")}`);
   }
-  if (guidance.allowed_items && guidance.allowed_items.length) {
-    items.push(`Accepted items found: ${guidance.allowed_items.join(", ")}`);
-  }
   if (guidance.disallowed_items && guidance.disallowed_items.length) {
     items.push(`Restricted items found: ${guidance.disallowed_items.join(", ")}`);
-  }
-  if (guidance.sources.length) {
-    items.push(`Sources: ${guidance.sources.join(" | ")}`);
   }
   guidance.notes.forEach((note) => items.push(note));
 
@@ -74,6 +117,23 @@ function renderGuidance(guidance) {
     li.textContent = text;
     guidanceNotes.appendChild(li);
   });
+
+  // Render sources dropdown if sources exist
+  if (guidance.sources && guidance.sources.length > 0) {
+    sourceDropdown.classList.remove("hidden");
+    sourcesList.innerHTML = "";
+    guidance.sources.forEach((url) => {
+      const li = document.createElement("li");
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.textContent = url;
+      li.appendChild(a);
+      sourcesList.appendChild(li);
+    });
+  } else {
+    sourceDropdown.classList.add("hidden");
+  }
 }
 
 function renderDetections(detections) {
@@ -134,10 +194,10 @@ function drawOverlay(detections) {
     const color = STATUS_COLORS[det.final_status] || STATUS_COLORS.unknown;
 
     ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 1.5;
     ctx.strokeRect(x1, y1, boxW, boxH);
 
-    const label = `${det.label} | ${det.final_status}`;
+    const label = `${det.label} #1 | ${det.final_status}`;
     ctx.font = "15px IBM Plex Mono";
     const textWidth = ctx.measureText(label).width;
     const textY = y1 > 26 ? y1 - 10 : y1 + 20;
@@ -212,6 +272,7 @@ loadRulesBtn.addEventListener("click", async () => {
   }
 
   setStatus(locationStatus, "Fetching local recycling guidance...");
+  showLoading();
 
   try {
     const data = await postJson("/api/guidelines", {
@@ -223,6 +284,8 @@ loadRulesBtn.addEventListener("click", async () => {
     setStatus(locationStatus, `Local rules loaded. Mapping updated with ${updatedCount} keys.`, "ok");
   } catch (err) {
     setStatus(locationStatus, `Guidance error: ${err.message}`, "bad");
+  } finally {
+    hideLoading();
   }
 });
 
@@ -237,6 +300,7 @@ async function analyzeCurrentFrame() {
   }
 
   trackingBusy = true;
+  showLoading();
 
   const context = canvasEl.getContext("2d");
   canvasEl.width = videoEl.videoWidth || 640;
@@ -247,6 +311,13 @@ async function analyzeCurrentFrame() {
   const location = locationInput.value.trim();
   const sourceUrl = sourceUrlInput.value.trim();
 
+  // Debug: log frame/post size to help diagnose missing detections
+  try {
+    console.log("Posting frame to /api/detect-frame, image length:", imageData.length);
+  } catch (e) {
+    console.warn("Could not compute image length for debug log", e);
+  }
+
   setStatus(detectStatus, "Tracking live frames...");
 
   try {
@@ -255,15 +326,18 @@ async function analyzeCurrentFrame() {
       location,
       source_url: sourceUrl,
     });
+    console.log("/api/detect-frame response:", data);
     setSummary(data.summary);
     renderDetections(data.detections);
     drawOverlay(data.detections);
     renderGuidance(data.guidance);
     setStatus(detectStatus, "Live tracking active.", "ok");
   } catch (err) {
+    console.error("Error posting frame or handling response:", err);
     setStatus(detectStatus, `Detection error: ${err.message}`, "bad");
   } finally {
     trackingBusy = false;
+    hideLoading();
   }
 }
 

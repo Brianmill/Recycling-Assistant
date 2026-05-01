@@ -131,15 +131,16 @@ button:hover {
   overflow: hidden;
   border: 1px solid var(--line);
   background: #101510;
-  min-height: 520px;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  max-height: 78vh;
   position: relative;
 }
 
 video {
   width: 100%;
-  height: 520px;
-  max-height: 62vh;
-  object-fit: cover;
+  height: 100%;
+  object-fit: contain;
   display: block;
 }
 
@@ -199,6 +200,103 @@ video {
   color: var(--bad);
 }
 
+.example-image-wrap {
+  margin-top: 0.8rem;
+  text-align: center;
+}
+
+.example-image {
+  max-width: 30%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+/* Loading Spinner */
+.loading-spinner {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background-color: rgba(0, 0, 0, 0.7);
+  border-radius: 8px;
+  padding: 30px;
+  text-align: center;
+  z-index: 9999;
+  min-width: 150px;
+}
+
+.loading-spinner.hidden {
+  display: none;
+}
+
+.loading-spinner p {
+  color: #ffffff;
+  margin-top: 15px;
+  font-size: 14px;
+}
+
+.spinner {
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #1aa36a;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin: 0 auto;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Sources Dropdown */
+.sources-dropdown {
+  margin-top: 15px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background-color: #f9f9f9;
+}
+
+.sources-dropdown.hidden {
+  display: none;
+}
+
+.sources-dropdown summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: #333;
+  user-select: none;
+}
+
+.sources-dropdown summary:hover {
+  color: #1aa36a;
+}
+
+.sources-list {
+  list-style-type: none;
+  padding: 10px 0 0 0;
+  margin: 10px 0 0 0;
+  border-top: 1px solid #ddd;
+}
+
+.sources-list li {
+  padding: 5px 0;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.sources-list a {
+  color: #1aa36a;
+  text-decoration: none;
+}
+
+.sources-list a:hover {
+  text-decoration: underline;
+}
+
 @media (max-width: 760px) {
   .app-shell {
     margin-top: 1rem;
@@ -209,11 +307,11 @@ video {
   }
 
   .camera-wrap {
-    min-height: 360px;
+    aspect-ratio: 4 / 3;
+    max-height: 65vh;
   }
 
   video {
-    height: 360px;
-    max-height: 55vh;
+    height: 100%;
   }
 }
