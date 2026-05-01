@@ -197,7 +197,14 @@ function drawOverlay(detections) {
     ctx.lineWidth = 1.5;
     ctx.strokeRect(x1, y1, boxW, boxH);
 
-    const label = `${det.label} #1 | ${det.final_status}`;
+    let label;
+
+    if (det.label === "plastic") {
+      label = `${det.label} #1 | ${det.final_status}`;
+    } else {
+      label = `${det.label} | ${det.final_status}`;
+    }
+    
     ctx.font = "15px IBM Plex Mono";
     const textWidth = ctx.measureText(label).width;
     const textY = y1 > 26 ? y1 - 10 : y1 + 20;
