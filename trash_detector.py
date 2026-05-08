@@ -507,7 +507,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--serial-port",
         type=str,
-        default="COM3",
+        default="/dev/cu.usbserial-0001",
         help="Optional ESP32 serial port for servo commands, for example COM5 or /dev/ttyUSB0.",
     )
     parser.add_argument(

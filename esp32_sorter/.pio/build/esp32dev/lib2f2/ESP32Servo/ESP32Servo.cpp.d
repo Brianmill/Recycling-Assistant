@@ -1,5 +1,8 @@
-.pio/build/esp32dev/FrameworkArduino/Esp.cpp.o: \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/Esp.cpp \
+.pio/build/esp32dev/lib2f2/ESP32Servo/ESP32Servo.cpp.o: \
+ .pio/libdeps/esp32dev/ESP32Servo/src/ESP32Servo.cpp \
+ .pio/libdeps/esp32dev/ESP32Servo/src/ESP32Servo.h \
+ .pio/libdeps/esp32dev/ESP32Servo/src/ESP32PWM.h \
+ /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-ledc.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp_arduino_version.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/FreeRTOS.h \
@@ -125,7 +128,6 @@
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/HWCDC.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/USBCDC.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/Esp.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/spi_flash/include/esp_partition.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/spi_flash/include/esp_flash.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/hal/include/hal/spi_flash_types.h \
@@ -134,13 +136,4 @@
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/spi_flash/include/esp_spi_flash_counters.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_hw_support/include/soc/esp32/spiram.h \
  /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/io_pin_remap.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/spi_flash/include/esp_spi_flash.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/app_update/include/esp_ota_ops.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/bootloader_support/include/esp_image_format.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/bootloader_support/include/esp_flash_partitions.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/bootloader_support/include/esp_app_format.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/MD5Builder.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_rom/include/esp_rom_md5.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/soc/esp32/include/soc/spi_reg.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_rom/include/esp32/rom/spi_flash.h \
- /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/soc/esp32/include/soc/efuse_reg.h
+ /Users/brianmillward/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h
