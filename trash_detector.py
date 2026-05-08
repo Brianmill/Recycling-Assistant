@@ -1,4 +1,5 @@
 import argparse
+import importlib
 import json
 import time
 from collections import deque
@@ -35,6 +36,53 @@ class TrackState:
     history: Deque[str] = field(default_factory=lambda: deque(maxlen=8))
     recycle_scores: Deque[float] = field(default_factory=lambda: deque(maxlen=8))
     unknown_streak: int = 0
+
+
+class SerialSorterController:
+    def __init__(self, port: str, baud_rate: int = 115200, cooldown_seconds: float = 1.5) -> None:
+        self.port = port
+        self.baud_rate = baud_rate
+        self.cooldown_seconds = cooldown_seconds
+        self.last_command: Optional[str] = None
+        self.last_sent_at = 0.0
+        self._serial = None
+
+    def open(self) -> None:
+        try:
+            serial_module = importlib.import_module("serial")
+        except ImportError as exc:
+            raise RuntimeError(
+                "pyserial is not installed. Install requirements.txt before using --serial-port."
+            ) from exc
+
+        self._serial = serial_module.Serial(self.port, self.baud_rate, timeout=1)
+        time.sleep(2.0)
+        self.send("CENTER", force=True)
+
+    def send(self, command: str, force: bool = False) -> bool:
+        normalized = command.strip().upper()
+        if not normalized or self._serial is None:
+            return False
+
+        now = time.time()
+        if not force and normalized == self.last_command and (now - self.last_sent_at) < self.cooldown_seconds:
+            return False
+
+        try:
+            self._serial.write(f"{normalized}\n".encode("utf-8"))
+            self._serial.flush()
+            self.last_command = normalized
+            self.last_sent_at = now
+            print(f"Sent ESP32 command: {normalized}")
+            return True
+        except Exception as exc:
+            print(f"Warning: failed to send '{normalized}' to {self.port}: {exc}")
+            return False
+
+    def close(self) -> None:
+        if self._serial is not None:
+            self._serial.close()
+            self._serial = None
 
 
 def load_recyclability_map(map_path: Path) -> Dict[str, str]:
@@ -206,6 +254,26 @@ def fuse_decision(track: TrackState, detector_prob: float, verifier_prob: float,
     return status, final_prob
 
 
+def select_sort_command(detections: List[Dict[str, object]]) -> Optional[str]:
+    best_detection: Optional[Dict[str, object]] = None
+    best_score = -1.0
+
+    for det in detections:
+        status = str(det.get("status", "unknown"))
+        if status not in {"recyclable", "not_recyclable"}:
+            continue
+
+        score = float(det.get("final_prob", 0.0))
+        if score > best_score:
+            best_score = score
+            best_detection = det
+
+    if best_detection is None:
+        return None
+
+    return "LEFT" if str(best_detection.get("status")) == "recyclable" else "RIGHT"
+
+
 
 def draw_detection(frame, box: List[float], label: str, confidence: float, status: str) -> None:
     x1, y1, x2, y2 = [int(v) for v in box]
@@ -242,12 +310,24 @@ def run_webcam_detector(
     unknown_frames: int,
     tracker_iou: float,
     tracker_max_missed: int,
+    serial_port: Optional[str],
+    serial_baud: int,
+    serial_cooldown: float,
 ) -> None:
     
     model = YOLO(model_path)
     verifier = YOLO(verifier_path) if verifier_path else None
     mapping = load_recyclability_map(mapping_path)
     class_thresholds = load_class_thresholds(threshold_path)
+    sorter: Optional[SerialSorterController] = None
+
+    if serial_port:
+        sorter = SerialSorterController(serial_port, baud_rate=serial_baud, cooldown_seconds=serial_cooldown)
+        try:
+            sorter.open()
+        except Exception as exc:
+            print(f"Warning: could not open ESP32 serial port '{serial_port}': {exc}")
+            sorter = None
 
     tracks: Dict[int, TrackState] = {}
     frame_index = 0
@@ -306,8 +386,21 @@ def run_webcam_detector(
                 verifier_prob = verifier_recycle_probability(verifier, frame, xyxy)
                 status, final_prob = fuse_decision(track=track, detector_prob=detector_prob, verifier_prob=verifier_prob, recyclable_accept=recyclable_accept, trash_accept=trash_accept, unknown_frames=unknown_frames,)
 
-                show_label = f"{label}#{track_id}" if status == "recyclable" else f"trash#{track_id}"
+                det["status"] = status
+                det["final_prob"] = final_prob
+
+                if status == "recyclable":
+                    show_label = f"{label}#{track_id}"
+                elif status == "not_recyclable":
+                    show_label = f"trash#{track_id}"
+                else:
+                    show_label = f"unknown#{track_id}"
                 draw_detection(frame, track.display_box or xyxy, show_label, final_prob, status)
+
+            if sorter is not None:
+                command = select_sort_command(detections)
+                if command is not None:
+                    sorter.send(command)
 
             dt = time.time() - t0
             if dt > 0:
@@ -331,6 +424,8 @@ def run_webcam_detector(
     finally:
         cap.release()
         cv2.destroyAllWindows()
+        if sorter is not None:
+            sorter.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -409,6 +504,24 @@ def parse_args() -> argparse.Namespace:
         default=12,
         help="How many frames a track can be missing before being dropped.",
     )
+    parser.add_argument(
+        "--serial-port",
+        type=str,
+        default="COM3",
+        help="Optional ESP32 serial port for servo commands, for example COM5 or /dev/ttyUSB0.",
+    )
+    parser.add_argument(
+        "--serial-baud",
+        type=int,
+        default=115200,
+        help="Baud rate for the ESP32 serial link.",
+    )
+    parser.add_argument(
+        "--serial-cooldown",
+        type=float,
+        default=1.5,
+        help="Minimum seconds between repeated servo commands.",
+    )
 
     return parser.parse_args()
 
@@ -427,6 +540,9 @@ def main() -> None:
         unknown_frames=args.unknown_frames,
         tracker_iou=args.tracker_iou,
         tracker_max_missed=args.tracker_max_missed,
+        serial_port=args.serial_port or None,
+        serial_baud=args.serial_baud,
+        serial_cooldown=args.serial_cooldown,
     )
 
 
